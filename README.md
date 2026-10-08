@@ -39,9 +39,10 @@ dms ipc call plugins enable weDashBridge
 
 Then:
 
-1. In the Linux Wallpaper Engine plugin settings, pick any wallpaper once (so the current DMS wallpaper lives
-   in the plugin's screenshot folder) and enable **Generate static wallpaper**. Without it the picker
-   thumbnails, theme colors and the lock screen use the small Workshop preview instead of a real frame.
+1. In the Linux Wallpaper Engine plugin settings, enable **Generate static wallpaper** and pick any wallpaper
+   once. Its screenshot is what moves the DMS wallpaper into the gallery the first time, and later screenshots
+   give the picker thumbnails, theme colors and the lock screen a real frame instead of the small Workshop
+   preview.
 2. On niri, keep the engine out of the overview workspace cards:
 
    ```kdl
@@ -53,18 +54,20 @@ Then:
 
 ## How it works
 
-The Linux Wallpaper Engine plugin sets the DMS wallpaper to a screenshot of the running scene,
-`~/.cache/DankMaterialShell/we_screenshots/<monitor>-<workshopId>.jpg`, and the dashboard picker always browses
-the folder of the current wallpaper. This plugin fills that folder with previews of every Workshop item under
-the same names. When the picker selects one, the plugin calls
-`dms ipc call linuxWallpaperEngine set <workshopId> <monitor>`, and the engine plugin then overwrites the preview
-with a real screenshot.
+The dashboard picker always browses the folder of the current wallpaper. This plugin keeps one preview per
+Workshop item in `~/.cache/DankMaterialShell/we_gallery/<workshopId>.jpg` and keeps the DMS wallpaper pointed
+there, so the picker lists the library. Picking an entry calls
+`dms ipc call linuxWallpaperEngine set <workshopId> <monitor>`.
+
+The Linux Wallpaper Engine plugin also sets the DMS wallpaper, to its screenshots in
+`~/.cache/DankMaterialShell/we_screenshots/`. Those are never treated as picks: a screenshot of the scene that is
+playing replaces that scene's gallery preview, and a late screenshot of a scene that was already switched away
+from is ignored.
 
 ## Limitations
 
 - The picker shows one folder at a time, so while a Wallpaper Engine wallpaper is active your regular image
   folder is not listed. Choose a plain image from Settings → Wallpaper to switch back.
-- With several monitors each wallpaper appears once per monitor.
 - Only video wallpapers animate on the lock screen; the lock screen cannot host the engine itself.
 - If you switch to a plain image, the engine keeps running underneath until you turn it off
   (`dms ipc call plugins toggle linuxWallpaperEngine`).
