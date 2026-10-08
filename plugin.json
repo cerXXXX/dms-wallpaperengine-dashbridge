@@ -1,0 +1,13 @@
+{
+    "id": "weDashBridge",
+    "name": "Wallpaper Engine in DankDash",
+    "description": "Lists the Steam Workshop library in the DankDash wallpaper tab and applies picks through the Linux Wallpaper Engine plugin",
+    "version": "0.1.0",
+    "author": "cerXXXX",
+    "icon": "wallpaper",
+    "type": "daemon",
+    "capabilities": ["wallpaper"],
+    "component": "./WeDashBridge.qml",
+    "requires": ["linux-wallpaperengine", "magick", "inotifywait", "python3"],
+    "permissions": ["process"]
+}
