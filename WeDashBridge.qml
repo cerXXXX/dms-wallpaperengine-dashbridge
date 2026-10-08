@@ -7,53 +7,106 @@ import qs.Services
 import qs.Modules.Plugins
 
 // Bridges the DankDash wallpaper tab to the linuxWallpaperEngine plugin.
-// That plugin sets the DMS wallpaper to <shotDir>/<monitor>-<sceneId>.jpg, so the
-// tab browses <shotDir>. We fill <shotDir> with Workshop previews under the same
-// names; when the tab picks one, we tell the engine plugin to play that scene.
+// The tab browses the folder of the current wallpaper, so the DMS wallpaper is
+// kept on <galleryDir>/<sceneId>.jpg, a folder holding one preview per Workshop
+// item; picking one there tells the engine plugin to play that scene.
+// The engine plugin also sets the DMS wallpaper, to its screenshots in
+// <shotDir>; those are never treated as picks, only folded back into the gallery.
 PluginComponent {
     id: root
 
-    readonly property string shotDir: Paths.strip(StandardPaths.writableLocation(StandardPaths.GenericCacheLocation)) + "/DankMaterialShell/we_screenshots"
+    readonly property string cacheDir: Paths.strip(StandardPaths.writableLocation(StandardPaths.GenericCacheLocation)) + "/DankMaterialShell"
+    readonly property string galleryDir: cacheDir + "/we_gallery"
+    readonly property string shotDir: cacheDir + "/we_screenshots"
     readonly property string syncScript: Paths.strip(Qt.resolvedUrl("sync-gallery.sh"))
-    property var pending: ({})
     property bool resyncPending: false
     property bool lockPatched: false
+    // monitor -> { id, time } of the last scene the bridge asked the engine for
+    property var desired: ({})
+    // monitor -> classified wallpaper waiting for a decision
+    property var queued: ({})
+    property bool decidePending: false
 
     function screenNames() {
         return Quickshell.screens.map(s => s.name)
     }
 
-    // "<shotDir>/eDP-1-2511025691.jpg" -> { monitor: "eDP-1", id: "2511025691" }
-    function parseShot(path) {
-        if (!path || !path.startsWith(shotDir + "/"))
-            return null
-        const m = path.substring(shotDir.length + 1).match(/^(.+)-(\d+)\.jpg$/)
-        if (!m || m[1].startsWith("span-"))
-            return null
-        return { monitor: m[1], id: m[2] }
+    function wallpaperFor(name) {
+        return SessionData.perMonitorWallpaper ? SessionData.getMonitorWallpaper(name) : SessionData.wallpaperPath
     }
 
-    function collectPicks() {
-        const picks = {}
-        if (SessionData.perMonitorWallpaper) {
-            for (const name of screenNames()) {
-                const shot = parseShot(SessionData.getMonitorWallpaper(name))
-                if (shot && shot.monitor === name)
-                    picks[name] = shot.id
-            }
-        } else {
-            const shot = parseShot(SessionData.wallpaperPath)
-            if (shot)
-                picks[shot.monitor] = shot.id
+    function setWallpaperFor(name, path) {
+        if (wallpaperFor(name) === path)
+            return
+        if (SessionData.perMonitorWallpaper)
+            SessionData.setMonitorWallpaper(name, path)
+        else
+            SessionData.setWallpaper(path)
+    }
+
+    function galleryPath(sceneId) {
+        return galleryDir + "/" + sceneId + ".jpg"
+    }
+
+    // "<galleryDir>/2511025691.jpg"       -> { kind: "pick", id: "2511025691" }
+    // "<shotDir>/eDP-1-2511025691.jpg"    -> { kind: "shot", id: "2511025691" }
+    function classify(path) {
+        if (!path)
+            return null
+        if (path.startsWith(galleryDir + "/")) {
+            const m = path.substring(galleryDir.length + 1).match(/^(\d+)\.jpg$/)
+            return m ? { kind: "pick", id: m[1], path: path } : null
         }
-        pending = picks
-        applyTimer.restart()
+        if (path.startsWith(shotDir + "/")) {
+            const m = path.substring(shotDir.length + 1).match(/^(.+)-(\d+)\.jpg$/)
+            return (m && !m[1].startsWith("span-")) ? { kind: "shot", id: m[2], path: path } : null
+        }
+        return null
+    }
+
+    function handleWallpaperChange(picksToo) {
+        const next = Object.assign({}, queued)
+        for (const name of screenNames()) {
+            const c = classify(wallpaperFor(name))
+            if (c && (picksToo || c.kind === "shot"))
+                next[name] = c
+        }
+        queued = next
+        decideTimer.restart()
         updateDmsWallpaper()
         updateLockVideo()
     }
 
-    function wallpaperFor(name) {
-        return SessionData.perMonitorWallpaper ? SessionData.getMonitorWallpaper(name) : SessionData.wallpaperPath
+    // cur: monitor -> scene the engine plugin reports as playing
+    function decide(cur) {
+        const now = Date.now()
+        for (const name in queued) {
+            const c = queued[name]
+            const want = desired[name]
+            const recent = want && now - want.time < 15000
+
+            if (c.kind === "pick") {
+                if (c.id === cur[name] || (recent && c.id === want.id))
+                    continue
+                desired = Object.assign({}, desired, { [name]: { id: c.id, time: now } })
+                Quickshell.execDetached(["dms", "ipc", "call", "linuxWallpaperEngine", "set", c.id, name])
+                continue
+            }
+
+            // The engine plugin's screenshot timers outlive scene switches, so a
+            // screenshot may belong to a scene that is no longer playing. Never
+            // switch on one: keep the wallpaper on the scene that should play.
+            const target = recent ? want.id : cur[name]
+            if (!target)
+                continue
+            if (c.id === target) {
+                const adopt = adoptComponent.createObject(root, { monitor: name, sceneId: target, shot: c.path })
+                adopt.running = true
+            } else {
+                setWallpaperFor(name, galleryPath(target))
+            }
+        }
+        queued = {}
     }
 
     // DMS draws its own wallpaper on the same background layer as the engine, and
@@ -61,7 +114,7 @@ PluginComponent {
     // the engine owns; put the user's original preference back otherwise.
     function updateDmsWallpaper() {
         const engineOn = PluginService.isPluginLoaded("linuxWallpaperEngine")
-        const hidden = engineOn ? screenNames().filter(name => parseShot(wallpaperFor(name)) !== null) : []
+        const hidden = engineOn ? screenNames().filter(name => classify(wallpaperFor(name)) !== null) : []
         const prefs = Object.assign({}, SettingsData.screenPreferences || {})
         const saved = pluginService.loadPluginData(pluginId, "savedWallpaperPrefs", null)
 
@@ -100,9 +153,9 @@ PluginComponent {
         const engineOn = PluginService.isPluginLoaded("linuxWallpaperEngine")
         let sceneId = ""
         for (const name of screenNames()) {
-            const shot = engineOn ? parseShot(wallpaperFor(name)) : null
-            if (shot) {
-                sceneId = shot.id
+            const c = engineOn ? classify(wallpaperFor(name)) : null
+            if (c) {
+                sceneId = c.id
                 break
             }
         }
@@ -166,23 +219,20 @@ PluginComponent {
             resyncPending = true
             return
         }
-        syncProc.command = ["bash", syncScript, shotDir].concat(screenNames())
+        syncProc.command = ["bash", syncScript, galleryDir]
         syncProc.running = true
     }
 
     Connections {
         target: SessionData
-        function onWallpaperPathChanged() { root.collectPicks() }
-        function onMonitorWallpapersChanged() { root.collectPicks() }
-        function onPerMonitorWallpaperChanged() { root.collectPicks() }
+        function onWallpaperPathChanged() { root.handleWallpaperChange(true) }
+        function onMonitorWallpapersChanged() { root.handleWallpaperChange(true) }
+        function onPerMonitorWallpaperChanged() { root.handleWallpaperChange(true) }
     }
 
     Connections {
         target: Quickshell
-        function onScreensChanged() {
-            root.syncGallery()
-            root.updateDmsWallpaper()
-        }
+        function onScreensChanged() { root.updateDmsWallpaper() }
     }
 
     Connections {
@@ -201,32 +251,55 @@ PluginComponent {
         }
     }
 
-    // Both SessionData signals can fire for one pick; apply once they settle.
+    // Several SessionData signals fire for one change; decide once they settle,
+    // against what the engine plugin says is playing right now.
     Timer {
-        id: applyTimer
+        id: decideTimer
         interval: 300
         onTriggered: {
-            for (const monitor in root.pending) {
-                const proc = applyComponent.createObject(root, { monitor: monitor, sceneId: root.pending[monitor] })
-                proc.running = true
+            if (listProc.running) {
+                root.decidePending = true
+                return
             }
-            root.pending = {}
+            listProc.running = true
         }
     }
 
-    // The engine plugin restarts on every `set`, even for the same scene, and it
-    // writes its own screenshot back to the same path, so only call `set` when
-    // the picked scene differs from what is already playing.
+    Process {
+        id: listProc
+        command: ["dms", "ipc", "call", "linuxWallpaperEngine", "list"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const cur = {}
+                for (const line of text.split("\n")) {
+                    const m = line.match(/^([^:\s]+): (\d+)/)
+                    if (m)
+                        cur[m[1]] = m[2]
+                }
+                root.decide(cur)
+            }
+        }
+        onExited: {
+            if (root.decidePending) {
+                root.decidePending = false
+                decideTimer.restart()
+            }
+        }
+    }
+
+    // Copy the engine's screenshot over the scene's gallery preview, then point
+    // the wallpaper at the gallery entry so the tab keeps browsing the gallery.
     Component {
-        id: applyComponent
+        id: adoptComponent
         Process {
             property string monitor
             property string sceneId
-            command: ["bash", "-c",
-                'cur=$(dms ipc call linuxWallpaperEngine list | awk -v m="$1" \'index($0, m ": ") == 1 { print $2 }\'); ' +
-                '[ "$cur" = "$2" ] || dms ipc call linuxWallpaperEngine set "$2" "$1"',
-                "_", monitor, sceneId]
-            onExited: destroy()
+            property string shot
+            command: ["bash", "-c", 'cp -f "$1" "$2.tmp" && mv -f "$2.tmp" "$2"', "_", shot, root.galleryPath(sceneId)]
+            onExited: {
+                root.setWallpaperFor(monitor, root.galleryPath(sceneId))
+                destroy()
+            }
         }
     }
 
@@ -284,9 +357,12 @@ PluginComponent {
         }
     }
 
+    // Startup: fold a wallpaper left on an engine screenshot back into the gallery,
+    // but don't treat whatever gallery entry is current as a fresh pick.
     Component.onCompleted: {
         syncGallery()
         updateDmsWallpaper()
         lockPatchCheck.running = true
+        handleWallpaperChange(false)
     }
 }

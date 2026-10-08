@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Fill the linux-wallpaperengine plugin's screenshot dir with Workshop previews,
-# named <monitor>-<id>.jpg exactly like the plugin's own screenshots, so the
-# DankDash wallpaper tab lists the whole library.
-# usage: sync-gallery.sh <screenshot-dir> <monitor>...
+# Fill the gallery dir with one <id>.jpg preview per Wallpaper Engine Workshop
+# item, so the DankDash wallpaper tab lists the whole library.
+# usage: sync-gallery.sh <gallery-dir>
 set -u
-out=$1; shift
+out=$1
 mkdir -p "$out"
 
 declare -A seen
@@ -18,16 +17,14 @@ for root in "$HOME/.local/share/Steam" "$HOME/.steam/steam" \
         [[ $id =~ ^[0-9]+$ ]] || continue
         [ -z "${seen[$id]:-}" ] || continue
         seen[$id]=1
+        dst="$out/$id.jpg"
+        [ -e "$dst" ] && continue
         prev=$(ls "$dir"preview.* 2>/dev/null | head -n1)
         [ -n "$prev" ] || continue
-        for mon in "$@"; do
-            dst="$out/$mon-$id.jpg"
-            [ -e "$dst" ] && continue
-            tmp="$out/.$mon-$id.tmp.jpg"
-            magick "${prev}[0]" -resize '1920x1080^' -gravity center -extent 1920x1080 \
-                -quality 85 "$tmp" 2>/dev/null && mv -f "$tmp" "$dst"
-            rm -f "$tmp"
-        done
+        tmp="$out/.$id.tmp.jpg"
+        magick "${prev}[0]" -resize '1920x1080^' -gravity center -extent 1920x1080 \
+            -quality 85 "$tmp" 2>/dev/null && mv -f "$tmp" "$dst"
+        rm -f "$tmp"
     done
 done
 
@@ -35,9 +32,7 @@ done
 [ ${#seen[@]} -gt 0 ] || exit 0
 for f in "$out"/*.jpg; do
     [ -e "$f" ] || continue
-    name=$(basename "$f" .jpg)
-    id=${name##*-}
+    id=$(basename "$f" .jpg)
     [[ $id =~ ^[0-9]+$ ]] || continue
-    [[ $name == span-* ]] && continue
     [ -n "${seen[$id]:-}" ] || rm -f "$f"
 done
